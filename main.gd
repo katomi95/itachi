@@ -138,6 +138,10 @@ var moat_p := 0.0
 var barb_p := 0.0
 var cams_p := 0.0
 var guards_p := 0.0
+var crowd_p := 0.0
+var hero_scan := false
+var parade_on := false
+var allies: Array = []   # 味方(ターンをまたいで残る): {kind,x,suit,salute}
 var alarm_p := 0.0
 
 var bubbles: Array = []
@@ -205,8 +209,9 @@ const SFX_MAP := [
 	["ワン", "bark"], ["ウーー", "siren"], ["ジャキ", "snip"], ["パチン", "snip"], ["ビシッ", "salute"], ["ザッ", "salute"],
 	["ギギギ", "squeak"], ["ウィーン", "squeak"], ["ひょい", "boing"], ["ふわぁ", "boing"], ["くるっ", "boing"], ["ヘソ天", "boing"],
 	["キラーン", "chime"], ["ペタペタ", "chime"], ["！", "chime"], ["もぐもぐ", "munch"], ["なでなで", "munch"], ["クンクン", "munch"],
-	["？", "pop"],
+	["ポンッ", "boing"], ["ぞろぞろ", "whoosh"], ["？", "pop"],
 ]
+const PARADE := [[300.0, "guard"], [160.0, "worker"], [-160.0, "watcher"], [-310.0, "guard"], [-460.0, "worker"]]
 var sounds := {}
 var se_players: Array[AudioStreamPlayer] = []
 var bgm_player: AudioStreamPlayer
@@ -268,6 +273,41 @@ func sfx_sound(text: String) -> String:
 		if text.contains(m[0]):
 			return m[1]
 	return ""
+
+
+# ============================================================ 味方の増員
+
+const ALLY_SLOT := {"worker": 835.0, "watcher": 895.0, "guard": 690.0}
+const RECRUIT_LINES := {
+	"worker": ["作業員を増員する。", "いたちに警戒されないよう、\nこれを着てくれ。"],
+	"watcher": ["監視員も増やそう。", "いたちの目線で見張るんだ。\nこれを。"],
+	"guard": ["警備員を配置する。", "いたちに警戒されないようにな。"],
+}
+
+
+func recruit(kind: String) -> void:
+	var a := {"kind": kind, "x": 1060.0, "suit": false, "salute": false}
+	allies.append(a)
+	hero_say(RECRUIT_LINES[kind][0], 1.4)
+	var tw := create_tween()
+	tw.tween_method(func(v: float): a["x"] = v, 1060.0, ALLY_SLOT[kind], 1.0)
+	await tw.finished
+	await wait(0.3)
+	hero_say(RECRUIT_LINES[kind][1], 2.0)
+	await wait(1.6)
+	a["suit"] = true
+	puff(Vector2(a["x"], GY - 50.0), 12, Color(1, 1, 1, 0.9), 150.0)
+	sfx("ポンッ！", Vector2(a["x"], GY - 150.0), 0.8, Color(1, 1, 1), 40)
+	await wait(1.0)
+	hero_say("うむ。", 0.9)
+	await wait(0.7)
+
+
+func ally_of(kind: String) -> Dictionary:
+	for a in allies:
+		if a["kind"] == kind:
+			return a
+	return {}
 
 
 # ============================================================ 共通ヘルパ
@@ -374,6 +414,9 @@ func reset_turn_state() -> void:
 	barb_p = 0.0
 	cams_p = 0.0
 	guards_p = 0.0
+	crowd_p = 0.0
+	hero_scan = false
+	parade_on = false
 	alarm_p = 0.0
 	red_flash = false
 	hero_x = 745.0
@@ -416,6 +459,8 @@ func _process(delta: float) -> void:
 	if hero_working:
 		hero_arm_r = 1.9 + sin(t * 18.0) * 0.7
 		hero_arm_l = 0.6 + sin(t * 18.0 + 1.5) * 0.3
+	if hero_scan:
+		hero_look = sin(t * 7.0)
 	if hero_follow:
 		hero_look = lerpf(hero_look, clampf((e_x - hero_x) / 300.0, -1.0, 1.0), 0.12)
 	guard_look = lerpf(guard_look, clampf((e_x - guard_x) / 300.0, -1.0, 1.0), 0.15)
@@ -498,9 +543,9 @@ func run_intro() -> void:
 	shake = 0.0
 	bgm("main")
 	await wait(0.4)
-	hero_say("ぼくは いたち……ではない。着ぐるみだ。", 2.2)
-	await wait(2.4)
-	hero_say("今日も畑を守るぞ！", 1.6)
+	hero_say("いたち対策は、\nいたちになって考えるところから始まる。", 3.6)
+	await wait(3.9)
+	hero_say("だから、着ている。", 2.0)
 	await go({"title_a": 0.0}, 1.4)
 	await begin_turn()
 
@@ -572,6 +617,8 @@ func _on_pick(id: String) -> void:
 	state = "busy"
 	clear_buttons()
 	await wait(0.2)
+	if id != "perfect" and turn <= 3:
+		await recruit(["worker", "watcher", "guard"][turn - 1])
 	match id:
 		"fence": await m_fence()
 		"hole": await m_hole()
@@ -877,14 +924,8 @@ func m_sign() -> void:
 
 
 func m_guard() -> void:
-	guard_x = 1000.0
-	guard_p = 1.0
-	hero_say("プロを雇った！", 1.4)
+	var g := ally_of("guard")
 	e_front = false
-	var tw := create_tween()
-	tw.tween_property(self, "guard_x", 690.0, 1.1)
-	await tw.finished
-	sfx("ザッ！", Vector2(690.0, GY - 140.0), 0.8, Color(0.7, 0.85, 1.0), 44)
 	await yosh()
 	await walk_to(470.0, 200.0)
 	hero_say("止まれ！", 1.0)
@@ -895,7 +936,7 @@ func m_guard() -> void:
 	await go({"e_hat_dy": 0.0}, 0.3, Tween.TRANS_BOUNCE, Tween.EASE_OUT)
 	sfx("ビシッ！", Vector2(e_x + 20.0, GY - 150.0), 1.0, Color(1.0, 1.0, 1.0), 48)
 	e_salute = true
-	guard_salute = true
+	g["salute"] = true
 	await wait(1.4)
 	hero_say("ご苦労様です！", 1.3)
 	hero_shock = true
@@ -909,6 +950,7 @@ func m_guard() -> void:
 	e_hat = false
 	await wait(0.8)
 	hero_shock = false
+	g["salute"] = false
 
 
 func m_lock() -> void:
@@ -1027,6 +1069,9 @@ func m_perfect() -> void:
 	# 警備員
 	sfx("ザッ！ザッ！ザッ！", Vector2(340.0, GY - 200.0), 1.2, Color(0.7, 0.85, 1.0), 44)
 	await go({"guards_p": 1.0}, 0.6, Tween.TRANS_BACK, Tween.EASE_OUT)
+	hero_say("作業員も、監視員も、総動員だ。", 1.6)
+	sfx("ぞろぞろ", Vector2(1010.0, GY - 190.0), 1.0, Color(0.9, 0.9, 0.9), 40)
+	await go({"crowd_p": 1.0}, 0.6, Tween.TRANS_BACK, Tween.EASE_OUT)
 	# 警報装置
 	sfx("ウーーーッ！！", Vector2(900.0, GY - 330.0), 1.6, Color(1.0, 0.25, 0.2), 60)
 	await go({"alarm_p": 1.0}, 0.4, Tween.TRANS_BACK, Tween.EASE_OUT)
@@ -1048,28 +1093,33 @@ func m_perfect() -> void:
 	await go({"quiet_a": 1.0}, 0.5)
 	await wait(2.6)
 	await go({"quiet_a": 0.0}, 0.4)
-	# 手前をふつうに通り過ぎる
+	# いたちの列が通る(本物が混ざっている)
 	e_front = true
 	e_lane = 108.0
 	e_scale = 1.25
-	e_x = -220.0
+	e_x = -760.0
 	e_dir = 1.0
 	e_walk = true
+	parade_on = true
 	_whistle()
-	await go({"e_x": 1500.0}, 6.5, Tween.TRANS_LINEAR)
+	_parade_reactions()
+	await go({"e_x": 1900.0}, 9.0, Tween.TRANS_LINEAR)
 	e_walk = false
-	await wait(0.8)
-	# ゆっくり振り返って固まる
-	hero_cross = false
+	parade_on = false
+	hero_scan = false
+	hero_shock = false
+	hero_look = 0.0
 	hero_arm_l = 0.25
 	hero_arm_r = 0.25
+	await wait(0.8)
+	# ゆっくり振り返って固まる
 	await go({"hero_look": 1.0}, 1.8)
 	await wait(0.5)
 	hero_frozen = true
 	hero_sweat = true
 	hero_shock = true
-	sfx("…………", Vector2(hero_x, GY - 230.0), 2.0, Color(1.0, 1.0, 1.0), 40)
-	await wait(2.4)
+	hero_say("……どれだ？", 2.6)
+	await wait(3.0)
 	await go({"cover": 1.0}, 1.5)
 	await wait(0.5)
 	state = "end"
@@ -1081,6 +1131,21 @@ func m_perfect() -> void:
 	if auto_test:
 		print("AUTO: ending reached")
 		get_tree().quit()
+
+
+func _parade_reactions() -> void:
+	await wait(2.4)
+	hero_cross = false
+	hero_follow = false
+	hero_scan = true
+	hero_shock = true
+	hero_arm_l = 2.2
+	hero_arm_r = 2.2
+	hero_say("侵入者はどれだ！？", 1.8)
+	await wait(2.2)
+	hero_say("どれだ！？ どれだ！？", 1.8)
+	await wait(2.4)
+	hero_say("みんな同じに見える……！", 2.0)
 
 
 func _whistle() -> void:
@@ -1121,6 +1186,9 @@ func _draw() -> void:
 		draw_enemy()
 	draw_hero()
 	if e_front:
+		if parade_on:
+			for k in PARADE.size():
+				draw_crawler(e_x + PARADE[k][0], e_lane, PARADE[k][1], k * 1.7, e_scale)
 		draw_enemy()
 	draw_particles()
 	draw_hud()
@@ -1200,10 +1268,16 @@ func draw_world() -> void:
 	if dog_p > 0.0:
 		draw_dog(dog_x, dog_dir, dog_roll, dog_y)
 	# 警備員
-	draw_guard(guard_x, guard_p, guard_look, guard_salute)
+	for a in allies:
+		draw_person(a["x"], a["kind"], a["suit"], a["salute"], clampf((e_x - a["x"]) / 300.0, -1.0, 1.0), 1.0)
 	if guards_p > 0.0:
 		for gx in [300.0, 360.0, 420.0]:
-			draw_guard(gx, guards_p, guard_look, false)
+			draw_person(gx, "guard", true, false, clampf((e_x - gx) / 300.0, -1.0, 1.0), guards_p)
+	if crowd_p > 0.0:
+		var ck := ["worker", "watcher", "guard"]
+		for i in 3:
+			var cx := 960.0 + i * 58.0
+			draw_person(cx, ck[i], true, false, clampf((e_x - cx) / 300.0, -1.0, 1.0), crowd_p)
 	# カメラ
 	if cam_p > 0.0:
 		draw_cam(Vector2(585, GY - 260), cam_p, true)
@@ -1370,34 +1444,106 @@ func draw_cam(pos: Vector2, p: float, post: bool) -> void:
 	ell(pos, Vector2(8 * p, 8 * p), Color(0.2, 0.22, 0.26))
 
 
-func draw_guard(x: float, p: float, look: float, salute: bool) -> void:
+func draw_person(x: float, kind: String, suit: bool, salute: bool, look: float, p: float) -> void:
 	if p <= 0.0:
 		return
 	draw_set_transform(Vector2(x, GY), 0.0, Vector2(p, p))
 	ell(Vector2(0, 3), Vector2(30, 6), Color(0, 0, 0, 0.15))
-	draw_rect(Rect2(-15, -34, 13, 34), Color(0.12, 0.16, 0.34))
-	draw_rect(Rect2(2, -34, 13, 34), Color(0.12, 0.16, 0.34))
-	draw_rect(Rect2(-17, -5, 16, 5), Color(0.05, 0.05, 0.05))
-	draw_rect(Rect2(1, -5, 16, 5), Color(0.05, 0.05, 0.05))
-	draw_rect(Rect2(-23, -84, 46, 54), C_NAVY)
-	draw_rect(Rect2(-23, -48, 46, 6), Color(0.08, 0.08, 0.1))
-	ell(Vector2(10, -72), Vector2(4, 4), Color(1, 0.85, 0.2))
-	draw_line(Vector2(-23, -78), Vector2(-31, -44), C_NAVY, 11.0)
-	ell(Vector2(-31, -42), Vector2(6, 6), C_SKIN)
-	if salute:
-		draw_line(Vector2(23, -78), Vector2(36, -102), C_NAVY, 11.0)
-		draw_line(Vector2(36, -102), Vector2(14, -112), C_NAVY, 9.0)
-		ell(Vector2(12, -112), Vector2(6, 6), C_SKIN)
+	var uni := C_NAVY
+	if kind == "worker":
+		uni = Color(0.95, 0.55, 0.12)
+	elif kind == "watcher":
+		uni = Color(0.35, 0.5, 0.45)
+	var hy := -102.0
+	if suit:
+		ell(Vector2(24, -40), Vector2(8, 22), C_BROWN, 0.6)
+		for sx in [-1.0, 1.0]:
+			ell(Vector2(sx * 9, -17), Vector2(8, 17), C_BROWN)
+			ell(Vector2(sx * 10, -4), Vector2(10, 5), C_CREAM)
+		ell(Vector2(0, -58), Vector2(27, 32), C_BROWN)
+		ell(Vector2(0, -55), Vector2(17, 22), C_CREAM)
+		draw_line(Vector2(0, -78), Vector2(0, -36), Color(0.55, 0.55, 0.6), 2.0)
+		draw_line(Vector2(-24, -76), Vector2(-30, -44), C_BROWN, 14.0)
+		ell(Vector2(-30, -42), Vector2(7, 7), C_CREAM)
+		if salute:
+			draw_line(Vector2(24, -76), Vector2(36, -100), C_BROWN, 14.0)
+			draw_line(Vector2(36, -100), Vector2(15, -112), C_BROWN, 12.0)
+			ell(Vector2(13, -112), Vector2(7, 7), C_CREAM)
+		else:
+			draw_line(Vector2(24, -76), Vector2(30, -44), C_BROWN, 14.0)
+			ell(Vector2(30, -42), Vector2(7, 7), C_CREAM)
+		ell(Vector2(0, hy), Vector2(27, 25), C_BROWN)
+		ell(Vector2(-19, hy - 20), Vector2(8, 10), C_BROWN, -0.3)
+		ell(Vector2(19, hy - 20), Vector2(8, 10), C_BROWN, 0.3)
+		ell(Vector2(-19, hy - 19), Vector2(4, 6), Color(1.0, 0.7, 0.72), -0.3)
+		ell(Vector2(19, hy - 19), Vector2(4, 6), Color(1.0, 0.7, 0.72), 0.3)
+		ell(Vector2(look * 2.0, hy + 3), Vector2(17, 17), C_SKIN)
 	else:
-		draw_line(Vector2(23, -78), Vector2(31, -44), C_NAVY, 11.0)
-		ell(Vector2(31, -42), Vector2(6, 6), C_SKIN)
-	ell(Vector2(0, -102), Vector2(18, 19), C_SKIN)
-	ell(Vector2(0, -117), Vector2(20, 9), C_NAVY)
-	draw_rect(Rect2(-18, -118, 36, 7), C_NAVY)
-	draw_rect(Rect2(-8 + look * 6, -113, 30, 5), Color(0.1, 0.12, 0.3))
-	ell(Vector2(0, -120), Vector2(4, 4), Color(1, 0.85, 0.2))
-	draw_rect(Rect2(-13 + look * 3, -106, 26, 8), Color(0.05, 0.05, 0.05))
-	draw_line(Vector2(-5, -91), Vector2(5, -91), Color(0.5, 0.2, 0.15), 2.0)
+		draw_rect(Rect2(-15, -34, 13, 34), uni.darkened(0.4))
+		draw_rect(Rect2(2, -34, 13, 34), uni.darkened(0.4))
+		draw_rect(Rect2(-17, -5, 16, 5), Color(0.05, 0.05, 0.05))
+		draw_rect(Rect2(1, -5, 16, 5), Color(0.05, 0.05, 0.05))
+		draw_rect(Rect2(-23, -84, 46, 54), uni)
+		draw_rect(Rect2(-23, -48, 46, 6), Color(0.08, 0.08, 0.1))
+		draw_line(Vector2(-23, -78), Vector2(-31, -44), uni, 11.0)
+		ell(Vector2(-31, -42), Vector2(6, 6), C_SKIN)
+		if salute:
+			draw_line(Vector2(23, -78), Vector2(36, -102), uni, 11.0)
+			draw_line(Vector2(36, -102), Vector2(14, -112), uni, 9.0)
+			ell(Vector2(12, -112), Vector2(6, 6), C_SKIN)
+		else:
+			draw_line(Vector2(23, -78), Vector2(31, -44), uni, 11.0)
+			ell(Vector2(31, -42), Vector2(6, 6), C_SKIN)
+		ell(Vector2(0, hy), Vector2(18, 19), C_SKIN)
+	for sx in [-1.0, 1.0]:
+		ell(Vector2(sx * 7 + look * 3.0, hy + 1), Vector2(2.4, 3.2), Color(0.1, 0.07, 0.05))
+	draw_arc(Vector2(look * 2.0, hy + 8), 5, 0.3, PI - 0.3, 8, Color(0.4, 0.15, 0.1), 2.0)
+	match kind:
+		"guard":
+			ell(Vector2(0, hy - 14), Vector2(19, 8), C_NAVY)
+			draw_rect(Rect2(-19, hy - 16, 38, 6), C_NAVY)
+			draw_rect(Rect2(-6 + look * 6, hy - 11, 28, 4), Color(0.1, 0.12, 0.3))
+			ell(Vector2(0, hy - 16), Vector2(3.5, 3.5), Color(1, 0.85, 0.2))
+			draw_rect(Rect2(-12 + look * 3, hy - 3, 24, 7), Color(0.05, 0.05, 0.05))
+		"worker":
+			ell(Vector2(0, hy - 13), Vector2(20, 12), Color(1.0, 0.85, 0.1))
+			draw_rect(Rect2(-24, hy - 8, 48, 5), Color(0.95, 0.75, 0.05))
+			draw_rect(Rect2(-3, hy - 24, 6, 10), Color(0.95, 0.75, 0.05))
+		"watcher":
+			draw_arc(Vector2(0, hy - 2), 22, PI + 0.2, TAU - 0.2, 12, Color(0.2, 0.2, 0.25), 4.0)
+			ell(Vector2(-22, hy + 2), Vector2(6, 8), Color(0.2, 0.2, 0.25))
+			draw_line(Vector2(-22, hy + 8), Vector2(-10, hy + 14), Color(0.2, 0.2, 0.25), 3.0)
+			ell(Vector2(-9, hy + 14), Vector2(3, 3), Color(0.9, 0.2, 0.2))
+	reset_tf()
+
+
+func draw_crawler(x: float, lane: float, kind: String, phase: float, sc: float) -> void:
+	draw_set_transform(Vector2(x, GY + lane), 0.0, Vector2(sc, sc))
+	var bob := -absf(sin(t * 16.0 + phase)) * 3.0
+	ell(Vector2(0, 4), Vector2(62, 8), Color(0, 0, 0, 0.15))
+	ell(Vector2(-80, -46 + bob), Vector2(36, 11), C_BROWN, -0.35 + sin(t * 5.0) * 0.06)
+	for i in 4:
+		var off := sin(t * 16.0 + phase + i * PI * 0.5) * 7.0
+		ell(Vector2(-44.0 + i * 30.0 + off, -9), Vector2(8, 10), C_BROWN_D)
+	ell(Vector2(0, -34 + bob), Vector2(68, 23), C_BROWN)
+	ell(Vector2(6, -26 + bob), Vector2(52, 11), C_CREAM)
+	ell(Vector2(70, -48 + bob), Vector2(27, 25), C_BROWN)
+	ell(Vector2(56, -70 + bob), Vector2(8, 10), C_BROWN)
+	ell(Vector2(84, -70 + bob), Vector2(8, 10), C_BROWN)
+	ell(Vector2(73, -46 + bob), Vector2(19, 19), C_SKIN)
+	ell(Vector2(80, -50 + bob), Vector2(2.6, 3.4), Color(0.1, 0.07, 0.05))
+	ell(Vector2(67, -50 + bob), Vector2(2.6, 3.4), Color(0.1, 0.07, 0.05))
+	draw_arc(Vector2(74, -40 + bob), 5, 0.3, PI - 0.3, 8, Color(0.4, 0.15, 0.1), 2.0)
+	match kind:
+		"guard":
+			ell(Vector2(70, -68 + bob), Vector2(19, 8), C_NAVY)
+			draw_rect(Rect2(66, -66 + bob, 28, 4), C_NAVY)
+		"worker":
+			ell(Vector2(70, -68 + bob), Vector2(20, 11), Color(1.0, 0.85, 0.1))
+			draw_rect(Rect2(48, -64 + bob, 48, 4), Color(0.95, 0.75, 0.05))
+		"watcher":
+			draw_arc(Vector2(72, -50 + bob), 22, PI + 0.2, TAU - 0.2, 12, Color(0.2, 0.2, 0.25), 4.0)
+			ell(Vector2(50, -48 + bob), Vector2(6, 8), Color(0.2, 0.2, 0.25))
 	reset_tf()
 
 
